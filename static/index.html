@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>PGP Signature Browser</title>
+    <link rel='stylesheet' href='static/css/vis.css' />
+    <style type="text/css">
+		* {
+			font-family: Tahoma, Verdana, sans-serif;
+		}
+		#graph {
+			border: 1px solid lightgray;
+			margin: 5px;
+			padding: 5px;
+			float: left;
+			width: 1600px;
+			height: 800px;
+		}
+		#controls {
+			margin-left: 5px;
+			margin-right: 20px;
+			padding: 5px;
+			border: 1px solid #A0A0A0;
+			float: left;
+			width: 700px;
+			background-color: #E0E0E0;
+		}
+		#status {
+			margin-top: 10px;
+			padding: 5px;
+			border: 1px solid #A0A0A0;
+			float: bottom left;
+			font-weight: bold;
+		}
+		#result {
+			margin-top: 10px;
+			padding: 5px;
+			border: 1px solid #A0A0A0;
+			float: bottom left;
+			height: 200px;
+			overflow: auto;
+		}
+		.PhysicsConfiguration {
+    		font-family: Tahoma, Verdana, sans-serif !important;
+		}
+    </style>
+    <script type="text/javascript" src="static/js/jquery-1.11.0.js"></script>
+    <script type="text/javascript" src="static/js/vis.js"></script>
+</head>
+<body>
+
+<div id="controls">
+	<table>
+		<tr>
+			<td>Name:</td>
+			<td><input id="query_email" type="text"></td>
+			<td><button id="search_email">Search by email address</button></td>
+			<td><small>(sqlite string query, i.e. "%" to match any string)</small></td>
+		</tr>
+		<tr>
+			<td>Key ID:</td>
+			<td><input id="query_key" type="text"></td>
+			<td><button id="search_key">Search by key id</button></td>
+		</tr>
+	</table>
+	<button id="clear">Clear graph and search result</button>
+	<button id="undo">Undo last operation</button>
+	<div id="status"></div>
+	<div id="result"></div>
+</div>
+
+<div id="graph">
+</div>
+
+<script type="text/javascript">
+var undoLog = new Array();
+
+var nodes = new vis.DataSet();
+var edges = new vis.DataSet();
+
+var data = null;
+var graph = null;
+
+var options = {
+	configurePhysics: true,
+	dataManipulation: true,
+	smoothCurves: true,
+	shape: "box"
+};
+
+function nodeExists(idValue) {
+	var _nodes = nodes.get();
+
+	for (var i = 0; i < _nodes.length; i++) {
+		if (_nodes[i].id == idValue) {
+			return true;
+		}
+	}
+	
+	return false;
+}
+
+function edgeExists(fromValue, toValue) {
+	var _edges = edges.get();
+	
+	for (var i = 0; i < _edges.length; i++) {
+		if (_edges[i].from == fromValue && _edges[i].to == toValue) {
+			return true;
+		}
+	}
+	
+	return false;
+}
+
+function getKey(keyid) {
+	status('IN_PROGRESS');
+	$.getJSON('/key/' + keyid, function(data) {
+		var undoLogEntry = new Array();
+		undoLogEntry.nodes = new Array();
+		undoLogEntry.edges = new Array();
+		status('READY');
+
+		if (!nodeExists(data.pub.id)) {
+		    undoLogEntry.nodes.push(data.pub.id);
+			if (data.pub.type == 'pub') {
+				nodes.add({ title: data.pub.id, id: data.pub.id, label: data.pub.email, group: 'key', shape: 'box' });	
+			} else if (data.pub.type == 'sub') {
+				nodes.add({ title: data.pub.id, id: data.pub.id, label: data.pub.email, group: 'subkey', shape: 'box' });	
+			}
+		}
+
+		if (data.sig.length == 0) {
+			undoLog.push(undoLogEntry);
+		} else {
+			$.each(data.sig, function(i, item) {
+				$.getJSON('/key/' + item, function(datasig) {
+					if (!nodeExists(item)) {
+						undoLogEntry.nodes.push(item);
+						nodes.add({ title: item, id: item, label: datasig.pub.email, group: 'signature', shape: 'box' });
+					}
+
+					if (!edgeExists(item, keyid)) {
+						undoLogEntry.edges.push(item + '-' + keyid);
+						edges.add({ id: item + '-' + keyid, from: item, to: keyid, style: "arrow"});
+					}
+				});
+			});
+			undoLog.push(undoLogEntry);
+		}
+	});
+}
+
+function status(s) {
+	switch (s) {
+		case "IN_PROGRESS":
+			$('#undo').attr('disabled', true);
+			$('#search_key').attr('disabled', true);
+			$('#search_email').attr('disabled', true);
+			$('#clear').attr('disabled', true);
+
+			$('#status').text('Query in progress...');
+			break;
+		case "READY":
+			$('#undo').attr('disabled', false);
+			$('#search_key').attr('disabled', false);
+			$('#search_email').attr('disabled', false);
+			$('#clear').attr('disabled', false);
+			
+			$('#status').text('Ready.');
+			break;
+	}
+}
+
+overlay = $('#overlay').hide();
+
+$(document).ready(function() {
+	status('READY');
+
+	var container = document.getElementById('graph');
+	data = {
+		nodes: nodes,
+		edges: edges
+	};
+	graph = new vis.Network(container, data, options);
+
+	$('#search_email').click(function() {
+		status('IN_PROGRESS');
+		$('#result').empty();
+		$.getJSON('/key?email=' + $('#query_email').val(), function(data) {
+			status('READY');
+			for (var i = 0; i < data.keys.length; i++) {
+				$('#result').append('<a href="#" onclick="getKey(\'' + data.keys[i].id + '\');">' + data.keys[i].type + ' :: ' + data.keys[i].id + ' :: ' + data.keys[i].email.replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</a><br>');
+			}
+		});
+	});
+
+	$('#search_key').click(function() {
+		getKey($('#query_key').val());
+	});
+
+	$('#clear').click(function() {
+		nodes.clear();
+		edges.clear();
+		$('#result').empty();
+	});
+
+	$('#undo').click(function() {
+		var undoLogEntry = undoLog.pop();
+		$.each(undoLogEntry.edges, function(i, item) {
+			edges.remove(item);
+		});
+		$.each(undoLogEntry.nodes, function(i, item) {
+			nodes.remove(item);
+		});
+	});
+
+	graph.on('doubleClick', function(properties) {
+		if (properties.nodes.length == 1) {
+			var node = nodes.get(properties.nodes[0]);
+			getKey(node.id);
+		}
+	});
+});
+</script>
+
+</body>
+</html>

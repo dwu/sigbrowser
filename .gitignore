@@ -1,0 +1,5 @@
+# database
+signatures.db
+
+# other files
+*.pyc
